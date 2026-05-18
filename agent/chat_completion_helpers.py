@@ -1247,10 +1247,10 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     request_client_holder = {"client": None, "diag": None}
     first_delta_fired = {"done": False}
     deltas_were_sent = {"yes": False}  # Track if any deltas were fired (for fallback)
-    # Wall-clock timestamp of the last real streaming chunk.  The outer
+    # Monotonic timestamp of the last real streaming chunk. The outer
     # poll loop uses this to detect stale connections that keep receiving
-    # SSE keep-alive pings but no actual data.
-    last_chunk_time = {"t": time.time()}
+    # SSE keep-alive pings but no actual data, even if wall clock time jumps.
+    last_chunk_time = {"t": time.monotonic()}
 
     def _fire_first_delta():
         if not first_delta_fired["done"] and on_first_delta:
@@ -1307,7 +1307,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         )
         # Reset stale-stream timer so the detector measures from this
         # attempt's start, not a previous attempt's last chunk.
-        last_chunk_time["t"] = time.time()
+        last_chunk_time["t"] = time.monotonic()
         agent._touch_activity("waiting for provider response (streaming)")
         # Initialize per-attempt stream diagnostics so the retry block can
         # reach for them after the stream dies.  Lives on
@@ -1343,7 +1343,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         reasoning_parts: list = []
         usage_obj = None
         for chunk in stream:
-            last_chunk_time["t"] = time.time()
+            last_chunk_time["t"] = time.monotonic()
             agent._touch_activity("receiving stream response")
 
             # Update per-attempt diagnostic counters.  Best-effort —
@@ -1556,7 +1556,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         has_tool_use = False
 
         # Reset stale-stream timer for this attempt
-        last_chunk_time["t"] = time.time()
+        last_chunk_time["t"] = time.monotonic()
         # Per-attempt diagnostic dict for the retry block to consume.
         _diag = agent._stream_diag_init()
         request_client_holder["diag"] = _diag
@@ -1579,7 +1579,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 # Opus streams after 180 s even when events are
                 # actively arriving (the chat_completions path
                 # already does this at the top of its chunk loop).
-                last_chunk_time["t"] = time.time()
+                last_chunk_time["t"] = time.monotonic()
                 agent._touch_activity("receiving stream response")
 
                 # Update per-attempt diagnostic counters (best-effort).
@@ -1914,7 +1914,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
 
     t = threading.Thread(target=_call, daemon=True)
     t.start()
-    _last_heartbeat = time.time()
+    _last_heartbeat = time.monotonic()
     _HEARTBEAT_INTERVAL = 30.0  # seconds between gateway activity touches
     while t.is_alive():
         t.join(timeout=0.3)
@@ -1927,7 +1927,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         # activity on each chunk, but the gap between API call start
         # and first chunk can exceed the gateway timeout — especially
         # when the stale-stream timeout is disabled (local providers).
-        _hb_now = time.time()
+        _hb_now = time.monotonic()
         if _hb_now - _last_heartbeat >= _HEARTBEAT_INTERVAL:
             _last_heartbeat = _hb_now
             _waiting_secs = int(_hb_now - last_chunk_time["t"])
@@ -1938,7 +1938,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         # Detect stale streams: connections kept alive by SSE pings
         # but delivering no real chunks.  Kill the client so the
         # inner retry loop can start a fresh connection.
-        _stale_elapsed = time.time() - last_chunk_time["t"]
+        _stale_elapsed = time.monotonic() - last_chunk_time["t"]
         if _stale_elapsed > _stream_stale_timeout:
             _est_ctx = sum(len(str(v)) for v in api_kwargs.get("messages", [])) // 4
             logger.warning(
@@ -1967,7 +1967,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 pass
             # Reset the timer so we don't kill repeatedly while
             # the inner thread processes the closure.
-            last_chunk_time["t"] = time.time()
+            last_chunk_time["t"] = time.monotonic()
             agent._touch_activity(
                 f"stale stream detected after {int(_stale_elapsed)}s, reconnecting"
             )

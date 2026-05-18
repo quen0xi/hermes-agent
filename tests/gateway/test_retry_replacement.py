@@ -35,6 +35,7 @@ async def test_gateway_retry_replaces_last_user_turn_in_transcript(tmp_path):
     session_entry = MagicMock(session_id=session_id)
     session_entry.last_prompt_tokens = 111
     gw.session_store.get_or_create_session = MagicMock(return_value=session_entry)
+    gw.session_store.get_existing_session = MagicMock(return_value=session_entry)
 
     async def fake_handle_message(event):
         assert event.text == "retry me"
@@ -76,6 +77,7 @@ async def test_gateway_retry_replays_original_text_not_retry_command(tmp_path):
     session_entry = MagicMock(session_id="test-session")
     session_entry.last_prompt_tokens = 55
     gw.session_store.get_or_create_session.return_value = session_entry
+    gw.session_store.get_existing_session.return_value = session_entry
     gw.session_store.load_transcript.return_value = [
         {"role": "user", "content": "real message"},
         {"role": "assistant", "content": "answer"},

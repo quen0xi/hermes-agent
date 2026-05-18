@@ -9690,7 +9690,9 @@ class GatewayRunner:
     async def _handle_retry_command(self, event: MessageEvent) -> str:
         """Handle /retry command - re-send the last user message."""
         source = event.source
-        session_entry = self.session_store.get_or_create_session(source)
+        session_entry = self.session_store.get_existing_session(source)
+        if session_entry is None:
+            return t("gateway.retry.no_previous")
         history = self.session_store.load_transcript(session_entry.session_id)
         
         # Find the last user message
@@ -9747,27 +9749,37 @@ class GatewayRunner:
         except Exception:
             return 20
 
-    def _get_goal_manager_for_event(self, event: "MessageEvent"):
+    def _get_goal_manager_for_event(
+        self,
+        event: "MessageEvent",
+        *,
+        create_if_missing: bool = True,
+    ):
         """Return a GoalManager bound to the session for this gateway event.
 
-        Returns ``(manager, session_entry)`` or ``(None, None)`` if the
-        goals module can't be loaded.
+        Returns ``(manager, session_entry, state)`` where ``state`` is one of:
+        ``"ok"``, ``"no_session"``, or ``"unavailable"``.
         """
         try:
             from hermes_cli.goals import GoalManager
         except Exception as exc:
             logger.debug("goal manager unavailable: %s", exc)
-            return None, None
+            return None, None, "unavailable"
         try:
-            session_entry = self.session_store.get_or_create_session(event.source)
+            if create_if_missing:
+                session_entry = self.session_store.get_or_create_session(event.source)
+            else:
+                session_entry = self.session_store.get_existing_session(event.source)
         except Exception as exc:
             logger.debug("goal manager: session lookup failed: %s", exc)
-            return None, None
+            return None, None, "unavailable"
+        if session_entry is None:
+            return None, None, "no_session"
         sid = getattr(session_entry, "session_id", None) or ""
         if not sid:
-            return None, None
+            return None, None, "no_session"
         max_turns = self._goal_max_turns_from_config()
-        return GoalManager(session_id=sid, default_max_turns=max_turns), session_entry
+        return GoalManager(session_id=sid, default_max_turns=max_turns), session_entry, "ok"
 
     async def _handle_goal_command(self, event: "MessageEvent") -> str:
         """Handle /goal for gateway platforms.
@@ -9783,8 +9795,21 @@ class GatewayRunner:
         args = (event.get_command_args() or "").strip()
         lower = args.lower()
 
-        mgr, session_entry = self._get_goal_manager_for_event(event)
+        read_only = not args or lower in {"status", "pause", "resume", "clear", "stop", "done"}
+        mgr, session_entry, goal_state = self._get_goal_manager_for_event(
+            event,
+            create_if_missing=not read_only,
+        )
         if mgr is None:
+            if goal_state == "no_session":
+                if not args or lower == "status":
+                    return "No active goal. Set one with /goal <text>."
+                if lower == "pause":
+                    return t("gateway.goal.no_goal_set")
+                if lower == "resume":
+                    return t("gateway.goal.no_resume")
+                if lower in {"clear", "stop", "done"}:
+                    return t("gateway.no_active_goal")
             return t("gateway.goal.unavailable")
 
         if not args or lower == "status":
@@ -9854,8 +9879,13 @@ class GatewayRunner:
         to invoke while the agent is running.
         """
         args = (event.get_command_args() or "").strip()
-        mgr, _session_entry = self._get_goal_manager_for_event(event)
+        mgr, _session_entry, goal_state = self._get_goal_manager_for_event(
+            event,
+            create_if_missing=False,
+        )
         if mgr is None:
+            if goal_state == "no_session":
+                return "No active goal. Set one with /goal <text>."
             return t("gateway.goal.unavailable")
         if not mgr.has_goal():
             return "No active goal. Set one with /goal <text>."
@@ -10031,7 +10061,9 @@ class GatewayRunner:
     async def _handle_undo_command(self, event: MessageEvent) -> str:
         """Handle /undo command - remove the last user/assistant exchange."""
         source = event.source
-        session_entry = self.session_store.get_or_create_session(source)
+        session_entry = self.session_store.get_existing_session(source)
+        if session_entry is None:
+            return t("gateway.undo.nothing")
         history = self.session_store.load_transcript(session_entry.session_id)
         
         # Find the last user message and remove everything from it onward
@@ -11201,7 +11233,9 @@ class GatewayRunner:
         more aggressive about discarding everything else.
         """
         source = event.source
-        session_entry = self.session_store.get_or_create_session(source)
+        session_entry = self.session_store.get_existing_session(source)
+        if session_entry is None:
+            return t("gateway.compress.not_enough")
         history = self.session_store.load_transcript(session_entry.session_id)
 
         if not history or len(history) < 4:

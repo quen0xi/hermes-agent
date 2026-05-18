@@ -853,6 +853,33 @@ class SessionStore:
             self._ensure_loaded_locked()
             return len(self._entries) > 1
 
+    def get_existing_session(self, source: SessionSource) -> Optional[SessionEntry]:
+        """Return the current session entry without creating a new one.
+
+        Read-only slash commands use this to inspect the current conversation
+        lane without leaving behind an empty SessionEntry when no conversation
+        exists yet.
+
+        Reset-policy semantics still apply: if the existing entry would be
+        auto-reset on the next real message, treat it as absent here too.
+        This preserves the old command behavior ("nothing to retry/undo") while
+        avoiding ghost session creation.
+        """
+        session_key = self._generate_session_key(source)
+
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None:
+                return None
+            if entry.suspended:
+                return None
+            if entry.resume_pending:
+                return entry
+            if self._should_reset(entry, source):
+                return None
+            return entry
+
     def get_or_create_session(
         self,
         source: SessionSource,
